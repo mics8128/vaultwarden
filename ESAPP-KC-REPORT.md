@@ -12,7 +12,7 @@
 |---|---|
 | Vaultwarden fork | [`mics8128/vaultwarden`](https://github.com/mics8128/vaultwarden)（公開）的 `esapp/key-connector` 分支（已設為預設分支）。內容是 tag `1.37.5`，加上 PR [#7419](https://github.com/dani-garcia/vaultwarden/pull/7419) 的 8 個 commit（到 `6fceabef`），再加上 `a1c70b3d`（把 Key Connector 改成組織 SSO 設定，並與官方對齊）和 `d13a1de6`（CI）。 |
 | 映像 | `ghcr.io/mics8128/vaultwarden:1.37.5-esapp.10`（amd64，公開，可匿名 pull）；浮動 tag 為 `esapp-key-connector`。版本號格式：`<上游 tag>-esapp.<上游 tag 之後的 commit 數>`。 |
-| CI | `esapp-image.yml`：push 時建置並推送映像。`esapp-upstream-sync.yml`：每天 19:17 UTC 偵測上游 release，接著 rebase、執行 fmt／clippy／test（sqlite、mysql、postgresql），再推送分支與 tag、開 PR 並建置映像；遇到衝突或失敗時開 issue。上游 `build.yml` 也已在這個分支通過。 |
+| CI | `esapp-image.yml`：push 時建置並推送映像。`esapp-upstream-sync.yml`：每天 19:17 UTC 偵測上游 release，接著 rebase、執行 fmt／clippy／test（sqlite、mysql、postgresql），再推送分支與 tag、開 PR 並建置映像；遇到衝突或失敗時開 issue。上游 `build.yml` 也已在這個分支通過。sync 已手動觸發一次，結果為「on 1.37.5, upstream 1.37.5」並略過（[run](https://github.com/mics8128/vaultwarden/actions/runs/45673892406)）。上游目前沒有更新的 release，所以 rebase、PR、issue 這幾條路徑會在下一次上游 release 時才第一次實際執行。 |
 | Key Connector | 私有倉庫 `mics8128/esapp-auth`，分支 `feature/key-connector`（`6ac95e3`）。主要程式在 `internal/keyconnector`，設定 `KC_LISTEN` 時才啟動另一個 listener。這個分支尚未 merge 到 main，也未部署到 VM131。 |
 | 切換身分防護 | 同一個分支：`clients.json` 的應用欄位 `no_switch`，對應後台「切換身分時不能登入（只限本人，例如密碼庫）」。 |
 | 臨時驗證環境 | pve-1 VM140 `vw-kc-test`（`192.168.0.155`，4C/4G/24G，`onboot=0`），已保留。設定在 `/opt/kctest`（0700）。 |
@@ -93,7 +93,7 @@ sequenceDiagram
 7. **KC 成員查看自己的 API key**：用戶端會要求 email OTP，因為這類使用者沒有主密碼，所以正式環境必須設定 SMTP。測試環境沒有 SMTP，因此直接在 DB 寫入測試用 API key；測試結束後已清除。
 8. **KEK 輪替尚未實作**：目前做法是用舊 KEK 解開、再用新 KEK 重新加密，需要另寫一次性工具。
 9. 本機沒有 libpq，postgres／mysql 的測試只在 CI 執行；CI 的 `Build` 已通過。
-10. `esapp-upstream-sync.yml` 只使用 schedule／dispatch 觸發。預設分支改成 `esapp/key-connector` 後，GitHub 要等下一次 push 才會登錄這個 workflow；這份報告的 commit 會觸發登錄。如果上游修改了 `.github/workflows`，`GITHUB_TOKEN` 無法 push 這些修改，需要設定 secret `ESAPP_SYNC_TOKEN`（fine-grained PAT，權限為 contents + workflows write）。
+10. `esapp-upstream-sync.yml` 只使用 schedule／dispatch 觸發。預設分支改成 `esapp/key-connector` 後，GitHub 不會自動登錄這個 workflow，必須等這個檔案在預設分支有新的 commit 才會登錄；目前已完成登錄。如果上游修改了 `.github/workflows`，`GITHUB_TOKEN` 無法 push 這些修改，需要設定 secret `ESAPP_SYNC_TOKEN`（fine-grained PAT，權限為 contents + workflows write）。
 11. esapp-auth 的 `feature/key-connector` 從本機 main（`8bbf401`）分出來，所以 push 時一併帶上 main 尚未推送的 5 個 commit：Rakazo SCIM 相關 2 個、帳號 ID、移除 Vault／Gate／Rakazo、記住裝置。這 5 個 commit 與 KC 無關，origin/main 仍未更新。
 12. 小問題：esapp-auth 拒絕前會先記一行 INFO `switched sign-in`，接著才記 WARN `refused`。
 
