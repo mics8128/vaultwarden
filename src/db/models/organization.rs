@@ -35,6 +35,9 @@ pub struct Organization {
     pub billing_email: String,
     pub private_key: Option<String>,
     pub public_key: Option<String>,
+    // Upstream's SSO config `MemberDecryptionType` and `KeyConnectorUrl`, see api::core::key_connector
+    pub member_decryption_type: i32,
+    pub key_connector_url: Option<String>,
 }
 
 #[derive(Identifiable, Queryable, Insertable, AsChangeset)]
@@ -190,6 +193,8 @@ impl Organization {
             billing_email,
             private_key,
             public_key,
+            member_decryption_type: 0,
+            key_connector_url: None,
         }
     }
     // https://github.com/bitwarden/server/blob/9ebe16587175b1c0e9208f84397bb75d0d595510/src/Api/AdminConsole/Models/Response/Organizations/OrganizationResponseModel.cs
@@ -504,8 +509,8 @@ impl Membership {
             "familySponsorshipFriendlyName": null,
             "familySponsorshipAvailable": false,
             "productTierType": 3, // Enterprise tier
-            "keyConnectorEnabled": CONFIG.key_connector_enabled(),
-            "keyConnectorUrl": if CONFIG.key_connector_enabled() { Value::String(CONFIG.key_connector_url()) } else { Value::Null },
+            "keyConnectorEnabled": org.key_connector_url().is_some(),
+            "keyConnectorUrl": org.key_connector_url(),
             "familySponsorshipLastSyncDate": null,
             "familySponsorshipValidUntil": null,
             "familySponsorshipToDelete": null,

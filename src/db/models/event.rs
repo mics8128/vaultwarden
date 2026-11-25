@@ -56,7 +56,7 @@ pub enum EventType {
     UserFailedLogIn2fa = 1006,
     UserClientExportedVault = 1007,
     // UserUpdatedTempPassword = 1008, // Not supported
-    // UserMigratedKeyToKeyConnector = 1009, // Not supported
+    UserMigratedKeyToKeyConnector = 1009,
     UserRequestedDeviceApproval = 1010,
     // UserTdeOffboardingPasswordSet = 1011, // Not supported
 
@@ -123,8 +123,8 @@ pub enum EventType {
     // OrganizationVaultAccessed = 1603,
     // OrganizationEnabledSso = 1604, // Not supported
     // OrganizationDisabledSso = 1605, // Not supported
-    // OrganizationEnabledKeyConnector = 1606, // Not supported
-    // OrganizationDisabledKeyConnector = 1607, // Not supported
+    OrganizationEnabledKeyConnector = 1606,
+    OrganizationDisabledKeyConnector = 1607,
     // OrganizationSponsorshipsSynced = 1608, // Not supported
     // OrganizationCollectionManagementUpdated = 1609, // Not supported
 

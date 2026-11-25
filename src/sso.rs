@@ -280,6 +280,9 @@ pub async fn exchange_code(
 
     let client = Client::cached().await?;
     let (token_response, id_claims) = client.exchange_code(code, client_verifier, &sso_auth).await?;
+    if let Some(id_token) = token_response.extra_fields().id_token() {
+        crate::api::core::key_connector::check_not_delegated(&id_token.to_string())?;
+    }
 
     let user_info = client.user_info(token_response.access_token().to_owned()).await?;
 

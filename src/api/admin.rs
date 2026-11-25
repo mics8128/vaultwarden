@@ -67,6 +67,7 @@ pub fn routes() -> Vec<Route> {
         users_overview,
         organizations_overview,
         delete_organization,
+        update_organization_sso,
         diagnostics,
         get_diagnostics_config,
         resend_user_invite,
@@ -614,6 +615,7 @@ async fn organizations_overview(_token: AdminToken, conn: DbConn) -> ApiResult<H
         org["event_count"] = json!(Event::count_by_org(&o.uuid, &conn).await);
         org["attachment_count"] = json!(Attachment::count_by_org(&o.uuid, &conn).await);
         org["attachment_size"] = json!(get_display_size(Attachment::size_by_org(&o.uuid, &conn).await));
+        crate::api::core::key_connector::admin_org_json(&o, &mut org, &conn).await;
         organizations_json.push(org);
     }
 
@@ -625,6 +627,22 @@ async fn organizations_overview(_token: AdminToken, conn: DbConn) -> ApiResult<H
 async fn delete_organization(org_id: OrganizationId, _token: AdminToken, conn: DbConn) -> EmptyResult {
     let org = Organization::find_by_uuid(&org_id, &conn).await.map_res("Organization doesn't exist")?;
     org.delete(&conn).await
+}
+
+// The organization SSO settings (member decryption options / Key Connector), see api::core::key_connector
+#[post("/organizations/<org_id>/sso", format = "application/json", data = "<data>")]
+async fn update_organization_sso(
+    org_id: OrganizationId,
+    data: Json<crate::api::core::key_connector::OrgSsoSettings>,
+    token: AdminToken,
+    conn: DbConn,
+) -> EmptyResult {
+    if let Some(event) =
+        crate::api::core::key_connector::update_org_sso_settings(&org_id, data.into_inner(), &conn).await?
+    {
+        log_event(event, &org_id.to_string(), &org_id, &ACTING_ADMIN_USER.into(), 14, &token.ip.ip, &conn).await;
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]

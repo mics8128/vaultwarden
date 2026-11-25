@@ -250,6 +250,11 @@ async fn leave_organization(org_id: OrganizationId, headers: OrgMemberHeaders, c
     {
         err!("The last owner can't leave")
     }
+    if headers.user.uses_key_connector
+        && Organization::find_by_uuid(&org_id, &conn).await.is_some_and(|org| org.key_connector_url().is_some())
+    {
+        err!("Your organization's Single Sign-On settings prevent you from leaving.")
+    }
 
     log_event(
         EventType::OrganizationUserLeft,
@@ -2068,6 +2073,7 @@ async fn put_policy(
         }
     }
 
+    super::key_connector::check_policy_change(&org_id, pol_type_enum, data.enabled, &conn).await?;
     if pol_type_enum == OrgPolicyType::SingleOrg && !data.enabled && is_currently_enabled {
         let fill_assist_policy_enabled =
             OrgPolicy::find_by_org_and_type(&org_id, OrgPolicyType::FillAssist, &conn).await.is_some_and(|p| p.enabled);
@@ -2906,6 +2912,9 @@ async fn recover_account(
     let Some(mut user) = User::find_by_uuid(&member.user_uuid, &conn).await else {
         err!("User not found")
     };
+    if req.reset_master_password && user.uses_key_connector {
+        err!("Cannot reset password of a user with Key Connector.")
+    }
 
     check_reset_password_applicable_and_permissions(&org_id, &member_id, &headers, &conn).await?;
 

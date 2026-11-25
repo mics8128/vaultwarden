@@ -15,7 +15,7 @@ use crate::{
         ApiResult, EmptyResult, JsonResult,
         core::{
             accounts::{PreloginData, RegisterData, kdf_upgrade, prelogin, register},
-            log_user_event,
+            key_connector, log_user_event,
             two_factor::{
                 authenticator, duo_oidc, email, enforce_2fa_policy, is_twofactor_provider_usable, webauthn, yubikey,
             },
@@ -29,9 +29,9 @@ use crate::{
     db::{
         DbConn,
         models::{
-            AuthRequest, AuthRequestId, Device, DeviceId, EventType, Invitation, Membership, MembershipType,
-            OIDCCodeResponseError, OrganizationApiKey, OrganizationId, SendId, SsoAuth, SsoUser, TwoFactor,
-            TwoFactorIncomplete, TwoFactorType, User, UserId,
+            AuthRequest, AuthRequestId, Device, DeviceId, EventType, Invitation, OIDCCodeResponseError,
+            OrganizationApiKey, OrganizationId, SendId, SsoAuth, SsoUser, TwoFactor, TwoFactorIncomplete,
+            TwoFactorType, User, UserId,
         },
     },
     error::MapResult,
@@ -454,6 +454,7 @@ async fn password_login(data: ConnectData, user_id: &mut Option<UserId>, conn: &
             }
         )
     }
+    key_connector::check_password_login_allowed(&user, conn).await?;
 
     // Change the KDF Iterations (only when not logging in with an auth request)
     if data.auth_request.is_none() {
@@ -612,16 +613,9 @@ async fn authenticated_response(
         result["Key"] = Value::String(user.akey.clone());
     }
 
-    // Also advertised to users without a master password, that is how the client
-    // knows to enroll a new SSO user with the connector
-    if CONFIG.key_connector_enabled() && !has_master_password {
-        let advertise = uses_key_connector
-            || !CONFIG.key_connector_exempt_admins()
-            || !Membership::find_by_user(&user.uuid, conn).await.iter().any(|m| m.atype >= MembershipType::Admin);
-        if advertise {
-            result["UserDecryptionOptions"]["KeyConnectorOption"] =
-                crate::api::core::key_connector::key_connector_user_decryption_option();
-        }
+    let sso_login = auth_tokens.access_claims.amr.iter().any(|m| m == "external");
+    if let Some(option) = key_connector::user_decryption_option(user, sso_login, conn).await {
+        result["UserDecryptionOptions"]["KeyConnectorOption"] = option;
     }
 
     if let Some(token) = twofactor_token {
@@ -758,7 +752,7 @@ async fn user_api_key_login(
 
     // Note: No refresh_token is returned. The CLI just repeats the
     // client_credentials login flow when the existing token expires.
-    let result = json!({
+    let mut result = json!({
         "access_token": access_claims.token(),
         "expires_in": access_claims.expires_in(),
         "token_type": "Bearer",
@@ -778,6 +772,13 @@ async fn user_api_key_login(
             "Object": "userDecryptionOptions"
         },
     });
+
+    if user.uses_key_connector {
+        result["ApiUseKeyConnector"] = Value::Bool(true);
+        if let Some(option) = key_connector::user_decryption_option(&user, false, conn).await {
+            result["UserDecryptionOptions"]["KeyConnectorOption"] = option;
+        }
+    }
 
     Ok(Json(result))
 }

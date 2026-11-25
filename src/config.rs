@@ -837,14 +837,8 @@ make_config! {
     sso {
         /// Enabled
         sso_enabled:                    bool,   true,   def,    false;
-        /// Key Connector enabled |> Store master keys on an external Key Connector (requires SSO)
+        /// Key Connector enabled |> Allow organizations to store their members' master keys on a Key Connector (requires SSO). The URL is an organization SSO setting on the admin page
         key_connector_enabled:          bool,   true,   def,    false;
-        /// Key Connector URL |> Base URL of the Key Connector service, e.g. https://keyconnector.example.com
-        key_connector_url:              String, true,   def,    String::new();
-        /// Key Connector org name |> Name shown in the client's domain-confirmation dialog
-        key_connector_org_name:         String, true,   def,    String::from("Key Connector");
-        /// Key Connector exempt admins |> Do not advertise the Key Connector to owners and admins so they set a master password instead. Users already enrolled keep using key connector
-        key_connector_exempt_admins:    bool,   true,   def,    true;
         /// Only SSO login |> Disable Email+Master Password login
         sso_only:                       bool,   true,   def,    false;
         /// Allow SSO flow to create account |> You probably want to disable it when using a public provider
@@ -1173,13 +1167,6 @@ fn validate_config(cfg: &ConfigItems, on_update: bool) -> Result<(), Error> {
             err!(
                 "Key Connector is incompatible with `SSO_AUTH_ONLY_NOT_SESSION=true` (the connector must validate Vaultwarden-issued access tokens)"
             )
-        }
-        if cfg.key_connector_url.is_empty() {
-            err!("`KEY_CONNECTOR_URL` must be set when Key Connector is enabled")
-        }
-        let kc_url = cfg.key_connector_url.to_lowercase();
-        if !kc_url.starts_with("http://") && !kc_url.starts_with("https://") || Url::parse(&kc_url).is_err() {
-            err!("`KEY_CONNECTOR_URL` must be a valid URL containing the protocol (http, https)")
         }
     }
 

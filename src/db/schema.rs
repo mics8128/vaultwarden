@@ -127,6 +127,8 @@ table! {
         billing_email -> Text,
         private_key -> Nullable<Text>,
         public_key -> Nullable<Text>,
+        member_decryption_type -> Integer,
+        key_connector_url -> Nullable<Text>,
     }
 }
 

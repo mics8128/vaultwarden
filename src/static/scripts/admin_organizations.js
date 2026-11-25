@@ -29,9 +29,29 @@ function deleteOrganization(event) {
     }
 }
 
+function saveOrganizationSso(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    const org_uuid = event.target.dataset.vwOrgUuid;
+    const cell = document.querySelector(`td[data-vw-org-sso="${org_uuid}"]`);
+    const data = {
+        memberDecryptionType: Number(cell.querySelector("[name=memberDecryptionType]").value),
+        keyConnectorUrl: cell.querySelector("[name=keyConnectorUrl]").value,
+        requireSso: cell.querySelector("[name=requireSso]").checked,
+    };
+    _post(`${BASE_URL}/admin/organizations/${org_uuid}/sso`,
+        "SSO settings saved",
+        "Error saving SSO settings",
+        JSON.stringify(data)
+    );
+}
+
 function initActions() {
     document.querySelectorAll("button[vw-delete-organization]").forEach(btn => {
         btn.addEventListener("click", deleteOrganization);
+    });
+    document.querySelectorAll("button[vw-save-org-sso]").forEach(btn => {
+        btn.addEventListener("click", saveOrganizationSso);
     });
 
     if (jdenticon) {

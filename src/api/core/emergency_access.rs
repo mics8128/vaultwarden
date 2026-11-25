@@ -634,6 +634,9 @@ async fn takeover_emergency_access(emer_id: EmergencyAccessId, headers: Headers,
     let Some(grantor_user) = User::find_by_uuid(&emergency_access.grantor_uuid, &conn).await else {
         err!("Grantor user not found.")
     };
+    if grantor_user.uses_key_connector {
+        err!("You cannot takeover an account that is using Key Connector.")
+    }
 
     let result = json!({
         "kdf": grantor_user.client_kdf_type,
