@@ -1,0 +1,121 @@
+# esapp fork: follows upstream releases. When dani-garcia/vaultwarden publishes a release, the esapp commits are
+# rebased onto it, linted and tested. Success: branch esapp/rebase-<version>, tag <version>-esapp.<n>, ghcr image and
+# a PR to review. Conflict or failure: an issue.
+#
+# Pushing a branch that brings upstream changes to .github/workflows needs a token with the `workflow` scope:
+# set the ESAPP_SYNC_TOKEN secret (fine-grained PAT, contents + workflows: write) if such a push is refused.
+name: esapp upstream sync
+
+on:
+  schedule:
+    - cron: "17 19 * * *" # 03:17 Asia/Taipei
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: "Upstream release tag (default: latest release)"
+        required: false
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  packages: write
+
+concurrency:
+  group: esapp-upstream-sync
+
+jobs:
+  rebase:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    outputs:
+      branch: ${{ steps.check.outputs.branch }}
+      pushed: ${{ steps.push.outcome == 'success' }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: esapp/key-connector
+          fetch-depth: 0
+          token: ${{ secrets.ESAPP_SYNC_TOKEN || github.token }}
+
+      - name: Check for a new upstream release
+        id: check
+        env:
+          INPUT_TAG: ${{ inputs.upstream_tag }}
+        run: |
+          latest=${INPUT_TAG:-$(gh api repos/dani-garcia/vaultwarden/releases/latest --jq .tag_name)}
+          base=$(git describe --tags --abbrev=0 --match '[0-9]*.[0-9]*.[0-9]*' --exclude '*-*')
+          branch="esapp/rebase-${latest}"
+          echo "latest=${latest}" >> "$GITHUB_OUTPUT"
+          echo "base=${base}" >> "$GITHUB_OUTPUT"
+          echo "branch=${branch}" >> "$GITHUB_OUTPUT"
+          if [ "${latest}" = "${base}" ] || git ls-remote --exit-code origin "refs/heads/${branch}" > /dev/null \
+            || [ "$(gh issue list --state open --search "Upstream ${latest} in:title" --json number --jq length)" != 0 ]; then
+            echo "Nothing to do: on ${base}, upstream ${latest} (or an open issue already tracks it)"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Rebase onto the upstream release
+        id: rebase
+        if: steps.check.outputs.skip != 'true'
+        env:
+          LATEST: ${{ steps.check.outputs.latest }}
+          BASE: ${{ steps.check.outputs.base }}
+          BRANCH: ${{ steps.check.outputs.branch }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch --no-tags https://github.com/dani-garcia/vaultwarden.git "refs/tags/${LATEST}:refs/tags/${LATEST}"
+          git switch -c "${BRANCH}"
+          if ! git rebase --onto "${LATEST}" "${BASE}"; then
+            {
+              echo "Rebasing the esapp commits from ${BASE} onto upstream ${LATEST} conflicts in:"
+              echo
+              git diff --name-only --diff-filter=U | sed 's/^/- `/; s/$/`/'
+              echo
+              echo "Resolve locally: \`git switch -c ${BRANCH} esapp/key-connector && git rebase --onto ${LATEST} ${BASE}\`, then push the branch."
+            } > issue.md
+            git rebase --abort
+            gh issue create --title "Upstream ${LATEST}: rebase conflict" --body-file issue.md
+            exit 1
+          fi
+
+      - name: Lint and test
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential libmariadb-dev-compat libpq-dev libssl-dev pkg-config
+          cargo fmt --all -- --check
+          cargo clippy --features sqlite,mysql,postgresql --all-targets -- -D warnings
+          cargo test --features sqlite,mysql,postgresql
+
+      - name: Push branch and tag
+        id: push
+        if: steps.check.outputs.skip != 'true'
+        env:
+          LATEST: ${{ steps.check.outputs.latest }}
+          BRANCH: ${{ steps.check.outputs.branch }}
+        run: |
+          tag="${LATEST}-esapp.$(git rev-list --count "${LATEST}..HEAD")"
+          git tag "${tag}"
+          git push origin "refs/tags/${LATEST}" "${BRANCH}" "refs/tags/${tag}"
+          gh pr create --base esapp/key-connector --head "${BRANCH}" \
+            --title "Rebase onto upstream ${LATEST} (${tag})" \
+            --body "The esapp commits rebased cleanly onto upstream ${LATEST}; fmt, clippy and tests pass. Image: ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/vaultwarden:${tag}. Do not merge: adopt with \`git push --force-with-lease origin ${BRANCH}:esapp/key-connector\` after testing, then close this PR."
+
+      - name: Report failure
+        if: failure() && steps.rebase.outcome == 'success'
+        env:
+          LATEST: ${{ steps.check.outputs.latest }}
+        run: |
+          gh issue create --title "Upstream ${LATEST}: rebased, but checks or push failed" \
+            --body "See ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+  image:
+    needs: rebase
+    if: needs.rebase.outputs.pushed == 'true'
+    uses: ./.github/workflows/esapp-image.yml
+    with:
+      ref: ${{ needs.rebase.outputs.branch }}
