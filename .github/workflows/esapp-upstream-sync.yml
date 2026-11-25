@@ -48,9 +48,7 @@ jobs:
           latest=${INPUT_TAG:-$(gh api repos/dani-garcia/vaultwarden/releases/latest --jq .tag_name)}
           base=$(git describe --tags --abbrev=0 --match '[0-9]*.[0-9]*.[0-9]*' --exclude '*-*')
           branch="esapp/rebase-${latest}"
-          echo "latest=${latest}" >> "$GITHUB_OUTPUT"
-          echo "base=${base}" >> "$GITHUB_OUTPUT"
-          echo "branch=${branch}" >> "$GITHUB_OUTPUT"
+          printf 'latest=%s\nbase=%s\nbranch=%s\n' "${latest}" "${base}" "${branch}" >> "$GITHUB_OUTPUT"
           if [ "${latest}" = "${base}" ] || git ls-remote --exit-code origin "refs/heads/${branch}" > /dev/null \
             || [ "$(gh issue list --state open --search "Upstream ${latest} in:title" --json number --jq length)" != 0 ]; then
             echo "Nothing to do: on ${base}, upstream ${latest} (or an open issue already tracks it)"
