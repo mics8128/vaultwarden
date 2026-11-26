@@ -159,3 +159,20 @@ sequenceDiagram
 | `rsa_key.pem` | VM142 改成 0600（內容不變，JWKS 不變） | 它簽 Vaultwarden 登入 JWT，KC 依此信任 |
 
 未做（等使用者決定）：個人 API key 登入的 KC 解鎖、拒絕 `act`、Agent JIT、已是 KC 成員的 Admin 處理方式。限制：set-key 失敗重試時，KC 端可能已存有金鑰（重複 POST 回 400），這屬於 esapp-auth 的範圍。
+
+## 8. 驗收後修補（2026-11-27，secverify，映像 `1.37.5-esapp.28`）
+
+依據 `auth.esapp.net/reviews/security-astra-verify.md`。
+
+| 項目 | 修正 | 原因 |
+|---|---|---|
+| 撤銷判斷（A-H3／G8） | 撤銷是「原狀態 −128」（`Membership::revoke`），不是固定的 −1。KC 相關判斷統一成兩個函式：`revoked`（status < Invited）與 `active_member`（status ≥ Accepted）。上游 `find_main_org_user_email`、`find_org_user_email`、`find_main_user_org` 的 `!= Revoked` 也一併改成 `>= Invited`。測試用 `Membership::revoke()` 產生的實際值 | 第 7 節只排除 −1，實際撤銷的成員（−126～−128）仍會拿到 KC |
+| `esapp_sub` claim | VW 簽發的 access token（登入、續期、個人 API key）只在使用者是 KC 組織的有效成員（Accepted／Confirmed、未撤銷）時，才帶 `esapp_sub`＝`sso_users.identifier` 的 subject（Ory identity id，不可變）。KC 改用它查 Kratos（esapp-auth 端另行上線） | KC 原本以 email 查身分；email 可變，也無法反映 VW 的撤銷 |
+| 轉成 KC（A-H4／G2） | `convert-to-key-connector` 與 `key-connector/enroll`：(1) token 必須是 5 分鐘內登入取得的（新 claim `auth_time`，只在實際登入時寫入，續期取得的 token 沒有）；(2) VW 用使用者自己的 token 對 KC 送 `GET /user-keys`，確認 KC 已存有金鑰；兩項都通過才清掉主密碼，否則保留 | 官方用戶端在 SSO 登入後立刻轉換，使用流程不變；外洩或續期得到的工作階段無法丟掉主密碼，KC 沒存好也不會讓帳號無法解鎖 |
+| 註冊原子化（G7） | 既有紀錄改用單一條件式 `UPDATE ... WHERE` 未初始化（沒有密碼、未用 KC、沒有帳號金鑰、沒有 user key）；影響 0 列就拒絕 | 原本先讀再寫，中間可能被別的設定流程寫入 |
+
+**撤銷延遲**：VW 撤銷成員後，已發出的 access token 仍帶 `esapp_sub`，最長到該 token 到期：SSO 登入的 token 跟隨 IdP（Hydra）access token 效期（目前 1 小時），密碼／API key 登入為 2 小時。之後續期取得的 token 就沒有這個 claim。
+
+限制：
+- 轉換時 VW 會連 KC。KC 連不到時就拒絕轉換，主密碼保留，稍後可以再試。
+- 條件式註冊只有 sqlite 在本機編譯；postgres／mysql 由 CI 編譯。DB 行為沒有自動測試。
