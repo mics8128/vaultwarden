@@ -239,6 +239,11 @@ fn active_member(status: i32) -> bool {
     status >= MembershipStatus::Accepted as i32
 }
 
+// Upstream's ConvertUserToKeyConnectorCommand (and its V2, enroll) drops an existing user's master password. Not
+// offered here: it cannot be undone, and members are provisioned by SSO instead. Owners and admins keep theirs.
+const NO_CONVERSION: &str =
+    "This server does not convert existing accounts to Key Connector, contact your administrator";
+
 #[post("/accounts/convert-to-key-connector")]
 fn post_convert_to_key_connector(_headers: Headers) -> EmptyResult {
     err!(NO_CONVERSION)
