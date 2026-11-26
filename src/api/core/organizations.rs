@@ -1554,6 +1554,7 @@ async fn edit_member(
         }
     }
 
+    super::key_connector::log_key_connector_promotion(&member_to_edit, new_type as i32, &conn).await;
     member_to_edit.access_all = access_all;
     member_to_edit.atype = new_type as i32;
 

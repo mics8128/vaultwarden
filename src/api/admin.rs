@@ -579,6 +579,7 @@ async fn update_membership_type(data: Json<MembershipTypeData>, token: AdminToke
         }
     }
 
+    crate::api::core::key_connector::log_key_connector_promotion(&member_to_edit, new_type, &conn).await;
     member_to_edit.atype = new_type;
     // This check is also done at api::organizations::{accept_invite, _confirm_invite, _activate_member, edit_member}, update_membership_type
     OrgPolicy::check_user_allowed(&member_to_edit, "modify", &conn).await?;
@@ -637,12 +638,27 @@ async fn update_organization_sso(
     token: AdminToken,
     conn: DbConn,
 ) -> EmptyResult {
-    if let Some(event) =
-        crate::api::core::key_connector::update_org_sso_settings(&org_id, data.into_inner(), &conn).await?
-    {
-        log_event(event, &org_id.to_string(), &org_id, &ACTING_ADMIN_USER.into(), 14, &token.ip.ip, &conn).await;
+    // Every change and refused attempt is an event and a log line: the URL decides where members send their tokens
+    let data = data.into_inner();
+    let request = format!("{data:?}");
+    let result = crate::api::core::key_connector::update_org_sso_settings(&org_id, data, &conn).await;
+    let event = match &result {
+        Ok(Some(event)) => *event,
+        _ => EventType::OrganizationUpdated,
+    };
+    log_event(event, &org_id.to_string(), &org_id, &ACTING_ADMIN_USER.into(), 14, &token.ip.ip, &conn).await;
+    match &result {
+        Ok(_) => {
+            warn!("Admin {} changed the SSO / Key Connector settings of organization {org_id}: {request}", token.ip.ip);
+        }
+        Err(e) => {
+            warn!(
+                "Admin {} was refused changing the SSO / Key Connector settings of organization {org_id}: {request}: {e}",
+                token.ip.ip
+            );
+        }
     }
-    Ok(())
+    result.map(|_| ())
 }
 
 #[derive(Deserialize)]

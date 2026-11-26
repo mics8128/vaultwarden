@@ -10,10 +10,7 @@ use serde_json::Value;
 
 use crate::{
     CONFIG,
-    api::{
-        ApiResult, EmptyResult, JsonResult,
-        core::{accept_org_invite, log_user_event},
-    },
+    api::{ApiResult, EmptyResult, JsonResult, core::log_user_event},
     auth::Headers,
     db::{
         DbConn,
@@ -22,6 +19,7 @@ use crate::{
             OrganizationId, User, UserId,
         },
     },
+    mail,
     sso::FAKE_SSO_IDENTIFIER,
 };
 
@@ -55,7 +53,11 @@ async fn key_connector_membership(user_uuid: &UserId, conn: &DbConn) -> Option<(
     if !CONFIG.key_connector_enabled() {
         return None;
     }
+    // A revoked member no longer gets the organization's Key Connector (upstream drops revoked users from it)
     for member in Membership::find_any_state_by_user(user_uuid, conn).await {
+        if member.status == MembershipStatus::Revoked as i32 {
+            continue;
+        }
         if let Some(org) = Organization::find_by_uuid(&member.org_uuid, conn).await
             && org.key_connector_url().is_some()
         {
@@ -77,7 +79,7 @@ async fn find_key_connector_org(
     }
     let org = Organization::find_by_uuid(&OrganizationId::from(identifier.to_owned()), conn).await?;
     let member = Membership::find_by_user_and_org(user_uuid, &org.uuid, conn).await?;
-    org.key_connector_url().is_some().then_some((org, member))
+    (org.key_connector_url().is_some() && member.status != MembershipStatus::Revoked as i32).then_some((org, member))
 }
 
 /// The server's Key Connector organization (upstream allows one per self-hosted server)
@@ -156,9 +158,17 @@ async fn post_set_key_connector_key(data: Json<SetKeyConnectorKeyData>, headers:
     if user.private_key.is_some() || !user.password_hash.is_empty() {
         err!("Account already initialized, cannot set Key Connector key")
     }
-    let Some((_, member)) = find_key_connector_org(&data.org_identifier, &user.uuid, &conn).await else {
+    let Some((org, mut member)) = find_key_connector_org(&data.org_identifier, &user.uuid, &conn).await else {
         err!("Organization not found or user is not a member of it")
     };
+    // Upstream accepts the organization invite here. Check the policies before changing anything, and accept first:
+    // a failed user save then leaves an accepted invite and the client can retry.
+    let accepting = member.status == MembershipStatus::Invited as i32;
+    if accepting {
+        member.status = MembershipStatus::Accepted as i32;
+        OrgPolicy::check_user_allowed(&member, "join", &conn).await?;
+        member.save(&conn).await?;
+    }
 
     user.client_kdf_type = data.kdf;
     user.client_kdf_iter = data.kdf_iterations;
@@ -174,9 +184,14 @@ async fn post_set_key_connector_key(data: Json<SetKeyConnectorKeyData>, headers:
     log_user_event(EventType::UserMigratedKeyToKeyConnector, &user.uuid, headers.device.atype, &headers.ip.ip, &conn)
         .await;
 
-    // Upstream accepts the organization invite here
-    if member.status == MembershipStatus::Invited as i32 {
-        accept_org_invite(&user, member, None, &conn).await?;
+    // The account is set up; a mail failure must not report it as failed
+    if accepting
+        && CONFIG.mail_enabled()
+        && let Err(e) =
+            mail::send_invite_accepted(&user.email, &member.invited_by_email.unwrap_or(org.billing_email), &org.name)
+                .await
+    {
+        error!("Error sending invite accepted email: {e:#?}");
     }
     Ok(())
 }
@@ -190,6 +205,10 @@ async fn convert_to_key_connector(headers: Headers, wrapped_user_key: Option<Str
     if user.private_key.is_none() {
         err!("Account is not initialized, cannot convert to Key Connector")
     }
+    // Like set-key-connector-key: only a member of the Key Connector organization drops the master password
+    if !key_connector_membership(&user.uuid, &conn).await.is_some_and(|(_, member)| active_member(member.status)) {
+        err!("Organization not found or user is not a member of it")
+    }
 
     user.password_hash = Vec::new();
     user.password_hint = None;
@@ -202,6 +221,11 @@ async fn convert_to_key_connector(headers: Headers, wrapped_user_key: Option<Str
     log_user_event(EventType::UserMigratedKeyToKeyConnector, &user.uuid, headers.device.atype, &headers.ip.ip, &conn)
         .await;
     Ok(())
+}
+
+/// An invited or revoked membership does not yet (or no longer) give access to the organization
+fn active_member(status: i32) -> bool {
+    status >= MembershipStatus::Accepted as i32
 }
 
 #[post("/accounts/convert-to-key-connector")]
@@ -297,29 +321,24 @@ pub async fn update_org_sso_settings(
     let was_enabled = org.key_connector_url().is_some();
     let url = data.key_connector_url.map(|u| u.trim().trim_end_matches('/').to_owned()).filter(|u| !u.is_empty());
 
+    // Upstream locks the member decryption options once members use Key Connector. A new URL would send their
+    // login tokens elsewhere, and turning it off would leave them without a master password.
+    if (data.member_decryption_type != org.member_decryption_type || url != org.key_connector_url)
+        && has_key_connector_members(org_id, conn).await
+    {
+        err!("Key Connector settings cannot be changed while members use Key Connector.")
+    }
+
     match data.member_decryption_type {
-        MEMBER_DECRYPTION_MASTER_PASSWORD => {
-            if was_enabled {
-                for member in Membership::find_by_org(org_id, conn).await {
-                    if User::find_by_uuid(&member.user_uuid, conn).await.is_some_and(|u| u.uses_key_connector) {
-                        err!("Key Connector cannot be disabled at this moment.")
-                    }
-                }
-            }
-        }
+        MEMBER_DECRYPTION_MASTER_PASSWORD => {}
         MEMBER_DECRYPTION_KEY_CONNECTOR => {
             if !CONFIG.key_connector_enabled() || !CONFIG.sso_enabled() {
                 err!(
                     "You must enable SSO and Key Connector (`SSO_ENABLED`, `KEY_CONNECTOR_ENABLED`) to use Key Connector."
                 )
             }
-            let Some(origin) = url
-                .as_deref()
-                .and_then(|u| url::Url::parse(u).ok())
-                .filter(|u| matches!(u.scheme(), "http" | "https"))
-                .map(|u| u.origin().ascii_serialization())
-            else {
-                err!("Key Connector URL must be a valid http(s) URL")
+            let Some(origin) = url.as_deref().and_then(key_connector_origin) else {
+                err!("Key Connector URL must be a valid https URL")
             };
             // The web vault fetches the key from the connector, so the CSP has to allow it
             let connect_src = CONFIG.allowed_connect_src().to_lowercase();
@@ -361,4 +380,63 @@ pub async fn update_org_sso_settings(
         (true, false) => Some(EventType::OrganizationDisabledKeyConnector),
         _ => None,
     })
+}
+
+async fn has_key_connector_members(org_id: &OrganizationId, conn: &DbConn) -> bool {
+    for member in Membership::find_by_org(org_id, conn).await {
+        if User::find_by_uuid(&member.user_uuid, conn).await.is_some_and(|u| u.uses_key_connector) {
+            return true;
+        }
+    }
+    false
+}
+
+/// The origin of a Key Connector URL. Members send their login token to it, so plain http is only for loopback.
+fn key_connector_origin(url: &str) -> Option<String> {
+    let url = url::Url::parse(url).ok()?;
+    let loopback = match url.host()? {
+        url::Host::Domain(domain) => domain == "localhost",
+        url::Host::Ipv4(ip) => ip.is_loopback(),
+        url::Host::Ipv6(ip) => ip.is_loopback(),
+    };
+    (url.scheme() == "https" || (url.scheme() == "http" && loopback)).then(|| url.origin().ascii_serialization())
+}
+
+/// Upstream refuses owners and admins who use Key Connector; here they keep it (the user's decision), so a promotion
+/// is logged next to the caller's `OrganizationUserUpdated` event.
+pub async fn log_key_connector_promotion(member: &Membership, new_type: i32, conn: &DbConn) {
+    if member.atype >= MembershipType::Admin || new_type < MembershipType::Admin {
+        return;
+    }
+    if User::find_by_uuid(&member.user_uuid, conn).await.is_some_and(|u| u.uses_key_connector) {
+        warn!(
+            "Key Connector member {} of organization {} promoted to {}, they keep Key Connector",
+            member.uuid, member.org_uuid, new_type
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_accepted_and_confirmed_members_convert() {
+        assert!(!active_member(MembershipStatus::Revoked as i32));
+        assert!(!active_member(MembershipStatus::Invited as i32));
+        assert!(active_member(MembershipStatus::Accepted as i32));
+        assert!(active_member(MembershipStatus::Confirmed as i32));
+    }
+
+    #[test]
+    fn key_connector_url_needs_https_except_loopback() {
+        assert_eq!(key_connector_origin("https://kc.esapp.net/").as_deref(), Some("https://kc.esapp.net"));
+        assert_eq!(key_connector_origin("http://localhost:3002").as_deref(), Some("http://localhost:3002"));
+        assert_eq!(key_connector_origin("http://127.0.0.1:3002").as_deref(), Some("http://127.0.0.1:3002"));
+        assert_eq!(key_connector_origin("http://[::1]:3002").as_deref(), Some("http://[::1]:3002"));
+        assert_eq!(key_connector_origin("http://kc.esapp.net"), None);
+        assert_eq!(key_connector_origin("http://192.168.0.153:3002"), None);
+        assert_eq!(key_connector_origin("ftp://localhost"), None);
+        assert_eq!(key_connector_origin("not a url"), None);
+    }
 }
