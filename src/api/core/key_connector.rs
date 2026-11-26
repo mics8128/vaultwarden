@@ -3,7 +3,6 @@
 //
 // Like upstream, Key Connector is an organization SSO setting ("Member decryption options"), stored on the
 // organization. Owners and admins never use it, they keep their master password.
-use data_encoding::BASE64URL_NOPAD;
 use rocket::Route;
 use rocket::http::Status;
 use rocket::serde::json::Json;
@@ -223,21 +222,6 @@ pub async fn check_password_login_allowed(user: &User, conn: &DbConn) -> EmptyRe
     Ok(())
 }
 
-/// Refuses IdP sign-ins made on someone else's behalf (the RFC 8693 `act` claim, e.g. an admin impersonating a
-/// user): with Key Connector they would unlock that person's vault without the person.
-pub fn check_not_delegated(id_token: &str) -> EmptyResult {
-    let claims = id_token
-        .split('.')
-        .nth(1)
-        .and_then(|payload| BASE64URL_NOPAD.decode(payload.trim_end_matches('=').as_bytes()).ok())
-        .and_then(|json| serde_json::from_slice::<Value>(&json).ok());
-    match claims {
-        Some(claims) if claims.get("act").is_none() => Ok(()),
-        Some(_) => err!("Signing in on behalf of another user is not allowed"),
-        None => err!("Could not read id_token claims"),
-    }
-}
-
 /// Upstream's Single organization / Require SSO policy validators: neither can be turned off while the organization
 /// uses Key Connector
 pub async fn check_policy_change(
@@ -354,20 +338,4 @@ pub async fn update_org_sso_settings(
         (true, false) => Some(EventType::OrganizationDisabledKeyConnector),
         _ => None,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::check_not_delegated;
-
-    fn token(payload: &str) -> String {
-        format!("e30.{}.sig", data_encoding::BASE64URL_NOPAD.encode(payload.as_bytes()))
-    }
-
-    #[test]
-    fn delegated_id_tokens_are_refused() {
-        assert!(check_not_delegated(&token(r#"{"sub":"a"}"#)).is_ok());
-        assert!(check_not_delegated(&token(r#"{"sub":"a","act":{"sub":"admin"}}"#)).is_err());
-        assert!(check_not_delegated("not-a-jwt").is_err());
-    }
 }
