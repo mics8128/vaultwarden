@@ -648,6 +648,10 @@ impl SsoUser {
         .await
     }
 
+    pub async fn find_by_user(user_uuid: &UserId, conn: &DbConn) -> Option<Self> {
+        conn.run(move |conn| sso_users::table.filter(sso_users::user_uuid.eq(user_uuid)).first::<Self>(conn).ok()).await
+    }
+
     pub async fn delete(user_uuid: &UserId, conn: &DbConn) -> EmptyResult {
         conn.run(move |conn| {
             diesel::delete(sso_users::table.filter(sso_users::user_uuid.eq(user_uuid)))
