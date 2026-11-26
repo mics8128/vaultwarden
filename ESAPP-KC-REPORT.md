@@ -137,3 +137,25 @@ sequenceDiagram
 - **若 #7419 被上游合併**：比對上游 schema 與我們新增的兩個欄位，寫一次性 migration 把資料搬到上游欄位，然後丟掉 fork commit，改回上游映像。
 - **用戶端變動**：留意 `bitwarden/clients` 中 KC 相關 feature flag（V2 set-key、JIT provision）。若 Vaultwarden 回報的版本讓用戶端預設走 V2，需要補後端端點。
 - **esapp-auth KC**：程式只在 `internal/keyconnector`，另外 `main.go` 有一個接點；`go test ./internal/keyconnector` 已涵蓋官方 API 合約與拒絕規則。
+
+## 7. 安全修正（2026-11-27，sec-fix-vault）
+
+依據 `auth.esapp.net/reviews/security-opus-keys.md`（H2）、`security-opus-attacker.md`（L1）、`security-gemini-flash.md`（#3、#7、#8、#10、#18、#19、#23）。只做不改變使用流程的修正；映像 `1.37.5-esapp.<N>` 見部署紀錄。
+
+| 項目 | 修正 | 原因 |
+|---|---|---|
+| KC 設定鎖定 | 組織已有 `uses_key_connector` 成員時，`/admin` 拒絕修改 KC URL 與 member decryption option（含停用）。官方 SSO 設定同樣會鎖住 | 改 URL 會讓既有成員把登入 token 送到新位址；停用會讓他們沒有主密碼 |
+| KC 設定稽核 | `/admin` 每次儲存 SSO／KC 設定（含被拒絕的）都記事件（啟用 1606、停用 1607、其他 1600 `OrganizationUpdated`）並寫 WARN log（含來源 IP 與送出的設定） | 原本只有啟用或停用時記事件，改 URL 沒有紀錄。事件需要 `ORG_EVENTS_ENABLED=true`，VM142 已開，保留 365 天（`EVENTS_DAYS_RETAIN`） |
+| `ALLOWED_CONNECT_SRC` | 只能由環境變數設定：`/admin` 不能修改；`data/config.json` 裡的值啟動時忽略並警告 | 它限制 KC URL 可用的位址；能從 `/admin` 改就能同時改 URL |
+| KC URL | 必須是 https，http 只允許 loopback | 明文 KC URL 會曝露登入 token 與金鑰 |
+| `convert-to-key-connector` | 先確認使用者是 KC 組織的 Accepted／Confirmed 成員，否則拒絕並保留主密碼 | 原本任何非管理員帳號都能丟掉主密碼 |
+| 撤銷成員 | 已撤銷（revoked）的成員資格不再提供 KC 選項，也不能 set-key | 撤銷後不應再取得組織的 KC |
+| 成員升為 Admin／Owner | 已用 KC 的成員被升級時寫 WARN log；事件沿用既有 `OrganizationUserUpdated`。**不阻擋**，是否阻擋由使用者決定 | 官方不允許管理員使用 KC |
+| set-key-connector-key | 先檢查入組政策並接受邀請，再寫入帳號；通知信失敗只記 log，不回錯誤 | 原本帳號已標成 KC 後才檢查政策，失敗時使用者看到錯誤卻無法重試 |
+| Require SSO 與續期 | 密碼登入的 refresh token 續期也套用組織的 Require SSO 政策（Owner／Admin 依官方例外） | 原本只看全域 `SSO_ONLY`，開政策前的密碼工作階段可一直續期 |
+| 註冊 | 已有 KC 狀態、帳號金鑰或 user key 的紀錄不能再註冊 | KC 帳號沒有主密碼，原本會被當成未註冊而覆寫金鑰 |
+| SSO 主體 | UserInfo 的 `sub` 必須等於 id token 的 `sub`（OIDC Core 5.3.2）；`email_verified` 只採用與該 email 同一來源的值 | 避免把另一來源的驗證狀態套到別的地址 |
+| SSO PKCE 與兌換 | 一律驗本機 PKCE challenge（即使上游也驗）；兌換時刪除 SSO auth 必須剛好刪到一筆，否則拒絕 | 不依賴 IdP 是否真的強制 PKCE；同一筆兌換資料只能產生一個工作階段 |
+| `rsa_key.pem` | VM142 改成 0600（內容不變，JWKS 不變） | 它簽 Vaultwarden 登入 JWT，KC 依此信任 |
+
+未做（等使用者決定）：個人 API key 登入的 KC 解鎖、拒絕 `act`、Agent JIT、已是 KC 成員的 Admin 處理方式。限制：set-key 失敗重試時，KC 端可能已存有金鑰（重複 POST 回 400），這屬於 esapp-auth 的範圍。
