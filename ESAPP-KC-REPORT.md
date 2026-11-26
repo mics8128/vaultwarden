@@ -19,7 +19,7 @@
 | CI | `esapp-image.yml`：push 時建置並推送映像。`esapp-upstream-sync.yml`：每天 19:17 UTC 偵測上游 release，接著 rebase、執行 fmt／clippy／test（sqlite、mysql、postgresql），再推送分支與 tag、開 PR 並建置映像；遇到衝突或失敗時開 issue。上游 `build.yml` 也已在這個分支通過。sync 已手動觸發一次，結果為「on 1.37.5, upstream 1.37.5」並略過（[run](https://github.com/mics8128/vaultwarden/actions/runs/45673892406)）。上游目前沒有更新的 release，所以 rebase、PR、issue 這幾條路徑會在下一次上游 release 時才第一次實際執行。 |
 | Key Connector | 私有倉庫 `mics8128/esapp-auth`，分支 `feature/key-connector`（`6ac95e3`）。主要程式在 `internal/keyconnector`，設定 `KC_LISTEN` 時才啟動另一個 listener。這個分支尚未 merge 到 main，也未部署到 VM131。 |
 | 切換身分防護 | 同一個分支：`clients.json` 的應用欄位 `no_switch`，對應後台「切換身分時不能登入（只限本人，例如密碼庫）」。 |
-| 臨時驗證環境 | pve-1 VM140 `vw-kc-test`（`192.168.0.155`，4C/4G/24G，`onboot=0`），已保留。設定在 `/opt/kctest`（0700）。 |
+| 臨時驗證環境 | pve-1 VM140 `vw-kc-test`（`192.168.0.155`），2026-11-27 已刪除（`qm destroy 140 --purge`），`/opt/kctest` 的測試資料一併移除。 |
 
 ```mermaid
 sequenceDiagram
@@ -137,9 +137,3 @@ sequenceDiagram
 - **若 #7419 被上游合併**：比對上游 schema 與我們新增的兩個欄位，寫一次性 migration 把資料搬到上游欄位，然後丟掉 fork commit，改回上游映像。
 - **用戶端變動**：留意 `bitwarden/clients` 中 KC 相關 feature flag（V2 set-key、JIT provision）。若 Vaultwarden 回報的版本讓用戶端預設走 V2，需要補後端端點。
 - **esapp-auth KC**：程式只在 `internal/keyconnector`，另外 `main.go` 有一個接點；`go test ./internal/keyconnector` 已涵蓋官方 API 合約與拒絕規則。
-- **臨時環境 VM140**：
-  - 已保留，但 3 條 quick tunnel 已停用，也不會自動啟動，所以目前沒有對外網址。
-  - 臨時身分、Hydra client、Ory session，以及 `.env.people`（測試密碼）都已刪除；VW 測試 API key 也已清空。
-  - VW 測試資料與 KC 測試金鑰保留在 `/opt/kctest`，可作為證據。
-  - 若要重測，執行 `sudo systemctl enable --now kctunnel@{8080,8081,8082}` 後再執行 `sudo /opt/kctest/setup.sh`。quick tunnel 每次都會換新網址，所以需要重新建立 Hydra client 與身分。
-  - 不再需要時可執行 `qm destroy 140 --purge`。
