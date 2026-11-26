@@ -350,7 +350,12 @@ pub async fn register(data: Json<RegisterData>, conn: DbConn) -> JsonResult {
 
     let mut user = match User::find_by_mail(&email, &conn).await {
         Some(user) => {
-            if !user.password_hash.is_empty() {
+            // Key Connector members have no master password; only a bare invited record may register
+            if !user.password_hash.is_empty()
+                || user.uses_key_connector
+                || user.private_key.is_some()
+                || !user.akey.is_empty()
+            {
                 err!("Registration not allowed or user already exists")
             }
 
