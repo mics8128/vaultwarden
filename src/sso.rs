@@ -283,12 +283,24 @@ pub async fn exchange_code(
 
     let user_info = client.user_info(token_response.access_token().to_owned()).await?;
 
+    // OpenID Connect Core 5.3.2: the UserInfo response is only about the user when its `sub` matches the id token
+    if user_info.subject() != id_claims.subject() {
+        err!("The userinfo subject does not match the id token")
+    }
+
     let email = match id_claims.email().or(user_info.email()) {
         None => err!("Neither id token nor userinfo contained an email"),
         Some(e) => e.to_string().to_lowercase(),
     };
 
-    let email_verified = id_claims.email_verified().or(user_info.email_verified());
+    // Only trust a verification made for that same address
+    let email_verified = email_verified_for(
+        &email,
+        [
+            (id_claims.email().map(|e| e.to_string()), id_claims.email_verified()),
+            (user_info.email().map(|e| e.to_string()), user_info.email_verified()),
+        ],
+    );
 
     let user_name = id_claims.preferred_username().or(user_info.preferred_username()).map(|un| un.to_string());
 
@@ -481,5 +493,31 @@ pub async fn exchange_refresh_token(
             create_auth_tokens_impl(device, None, access_claims, access_token)
         }
         None => err!("No token present while in SSO"),
+    }
+}
+
+/// The first `email_verified` reported together with this same address
+fn email_verified_for(email: &str, sources: [(Option<String>, Option<bool>); 2]) -> Option<bool> {
+    sources
+        .into_iter()
+        .filter(|(e, _)| e.as_deref().is_some_and(|e| e.eq_ignore_ascii_case(email)))
+        .find_map(|(_, v)| v)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::email_verified_for;
+
+    #[test]
+    fn email_verified_only_counts_for_the_same_address() {
+        let id = |e: &str, v| (Some(e.to_owned()), v);
+        // Id token address with its own flag
+        assert_eq!(email_verified_for("a@x.net", [id("A@x.net", Some(false)), id("a@x.net", Some(true))]), Some(false));
+        // Same address in both: the userinfo flag fills a missing one
+        assert_eq!(email_verified_for("a@x.net", [id("a@x.net", None), id("a@x.net", Some(true))]), Some(true));
+        // Id token without an address: the userinfo pair decides
+        assert_eq!(email_verified_for("a@x.net", [(None, Some(true)), id("a@x.net", Some(true))]), Some(true));
+        // A verification made for another address does not carry over
+        assert_eq!(email_verified_for("a@x.net", [id("a@x.net", None), id("b@x.net", Some(true))]), None);
     }
 }
