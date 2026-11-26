@@ -365,6 +365,35 @@ impl User {
         }
     }
 
+    /// Registers an existing record (an invite) only while it is still uninitialized, in one conditional UPDATE so a
+    /// concurrent setup (master password, Key Connector, account keys) is never overwritten
+    pub async fn save_registration(&mut self, conn: &DbConn) -> EmptyResult {
+        if !crate::util::is_valid_email(&self.email) {
+            err!(format!("User email {} is not a valid email address", self.email.escape_debug()))
+        }
+        self.updated_at = Utc::now().naive_utc();
+        let user = &*self;
+        let updated: Result<usize, crate::error::Error> = conn
+            .run(move |conn| {
+                diesel::update(
+                    users::table
+                        .filter(users::uuid.eq(&user.uuid))
+                        .filter(users::password_hash.eq(Vec::<u8>::new()))
+                        .filter(users::uses_key_connector.eq(false))
+                        .filter(users::private_key.is_null())
+                        .filter(users::akey.eq("")),
+                )
+                .set(user)
+                .execute(conn)
+                .map_res("Error saving user")
+            })
+            .await;
+        if updated? != 1 {
+            err!("Registration not allowed or user already exists")
+        }
+        Ok(())
+    }
+
     pub async fn delete(&self, conn: &DbConn) -> EmptyResult {
         for member in Membership::find_confirmed_by_user(&self.uuid, conn).await {
             if member.atype == MembershipType::Owner

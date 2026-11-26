@@ -348,7 +348,9 @@ pub async fn register(data: Json<RegisterData>, conn: DbConn) -> JsonResult {
     let password_hint = clean_password_hint(data.master_password_hint.as_ref());
     enforce_password_hint_setting(password_hint.as_ref())?;
 
-    let mut user = match User::find_by_mail(&email, &conn).await {
+    let existing = User::find_by_mail(&email, &conn).await;
+    let registering_existing = existing.is_some();
+    let mut user = match existing {
         Some(user) => {
             // Key Connector members have no master password; only a bare invited record may register
             if !user.password_hash.is_empty()
@@ -432,7 +434,11 @@ pub async fn register(data: Json<RegisterData>, conn: DbConn) -> JsonResult {
         }
     }
 
-    user.save(&conn).await?;
+    if registering_existing {
+        user.save_registration(&conn).await?;
+    } else {
+        user.save(&conn).await?;
+    }
 
     // accept any open emergency access invitations
     if !CONFIG.mail_enabled() && CONFIG.emergency_access_allowed() {
