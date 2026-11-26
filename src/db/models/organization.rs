@@ -412,7 +412,7 @@ impl Organization {
                 .inner_join(users_organizations::table.on(users_organizations::org_uuid.eq(organizations::uuid)))
                 .inner_join(users::table.on(users::uuid.eq(users_organizations::user_uuid)))
                 .filter(users::email.eq(lower_mail))
-                .filter(users_organizations::status.ne(MembershipStatus::Revoked as i32))
+                .filter(users_organizations::status.ge(MembershipStatus::Invited as i32)) // revoke() subtracts 128
                 .order(users_organizations::atype.asc())
                 .select(organizations::all_columns)
                 .first::<Self>(conn)
@@ -429,7 +429,7 @@ impl Organization {
                 .inner_join(users_organizations::table.on(users_organizations::org_uuid.eq(organizations::uuid)))
                 .inner_join(users::table.on(users::uuid.eq(users_organizations::user_uuid)))
                 .filter(users::email.eq(lower_mail))
-                .filter(users_organizations::status.ne(MembershipStatus::Revoked as i32))
+                .filter(users_organizations::status.ge(MembershipStatus::Invited as i32)) // revoke() subtracts 128
                 .order(users_organizations::atype.asc())
                 .select(organizations::all_columns)
                 .load::<Self>(conn)
@@ -1140,7 +1140,7 @@ impl Membership {
         conn.run(move |conn| {
             users_organizations::table
                 .filter(users_organizations::user_uuid.eq(user_uuid))
-                .filter(users_organizations::status.ne(MembershipStatus::Revoked as i32))
+                .filter(users_organizations::status.ge(MembershipStatus::Invited as i32)) // revoke() subtracts 128
                 .order(users_organizations::atype.asc())
                 .first::<Self>(conn)
                 .ok()
