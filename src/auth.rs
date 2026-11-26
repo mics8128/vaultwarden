@@ -1424,7 +1424,11 @@ pub async fn refresh_tokens(
         }
         AuthMethod::Sso => err!("SSO is now disabled, Login again using email and master password"),
         AuthMethod::Password if CONFIG.sso_enabled() && CONFIG.sso_only() => err!("SSO is now required, Login again"),
-        AuthMethod::Password => AuthTokens::new(&device, &user, refresh_claims.sub, client_id),
+        AuthMethod::Password => {
+            // Same Require SSO policy as a new password login, so enabling it also ends existing password sessions
+            crate::api::core::key_connector::check_password_login_allowed(&user, conn).await?;
+            AuthTokens::new(&device, &user, refresh_claims.sub, client_id)
+        }
         _ => err!("Invalid auth method, cannot refresh token"),
     };
 
