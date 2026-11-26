@@ -101,7 +101,7 @@ jobs:
           git push origin "refs/tags/${LATEST}" "${BRANCH}" "refs/tags/${tag}"
           gh pr create --base esapp/key-connector --head "${BRANCH}" \
             --title "Rebase onto upstream ${LATEST} (${tag})" \
-            --body "The esapp commits rebased cleanly onto upstream ${LATEST}; fmt, clippy and tests pass. Image: ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/vaultwarden:${tag}. Do not merge: adopt with \`git push --force-with-lease origin ${BRANCH}:esapp/key-connector\` after testing, then close this PR."
+            --body "The esapp commits rebased cleanly onto upstream ${LATEST}; fmt, clippy and tests pass. Image: ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/vaultwarden:${tag}. Manual check after a web vault upgrade: signing out of the web vault must land on the ESAPP_LOGOUT_URL page, and locking must stay on the lock screen (esapp-signout.js reads the global_account_activeAccountId storage key). Do not merge: adopt with \`git push --force-with-lease origin ${BRANCH}:esapp/key-connector\` after testing, then close this PR."
 
       - name: Report failure
         if: failure() && steps.rebase.outcome == 'success'

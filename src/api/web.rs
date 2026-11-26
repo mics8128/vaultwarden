@@ -38,7 +38,8 @@ pub fn routes() -> Vec<Route> {
             app_id,
             apple_app_site_association,
             web_files,
-            vaultwarden_css
+            vaultwarden_css,
+            esapp_signout_js
         ]);
     }
 
@@ -152,8 +153,52 @@ fn vaultwarden_css() -> EtagCached<String> {
 }
 
 #[get("/")]
-async fn web_index() -> Cached<Option<NamedFile>> {
-    Cached::short(NamedFile::open(Path::new(&CONFIG.web_vault_folder()).join("index.html")).await.ok(), false)
+async fn web_index() -> Cached<Option<(ContentType, String)>> {
+    let index = tokio::fs::read_to_string(Path::new(&CONFIG.web_vault_folder()).join("index.html")).await.ok();
+    let index = match (index, esapp_logout_url()) {
+        (Some(html), Some(_)) => Some(inject_signout_script(&html, &CONFIG.domain_path())),
+        (index, _) => index,
+    };
+    Cached::short(index.map(|html| (ContentType::HTML, html)), false)
+}
+
+fn esapp_logout_url() -> Option<String> {
+    CONFIG.esapp_logout_url().filter(|u| !u.is_empty())
+}
+
+// esapp: a same-origin script (allowed by the CSP) that leaves the web vault for ESAPP_LOGOUT_URL after a sign-out
+fn inject_signout_script(html: &str, domain_path: &str) -> String {
+    let tag = format!("<script src=\"{domain_path}/esapp-signout.js\"></script></head>");
+    html.replacen("</head>", &tag, 1)
+}
+
+// The web vault signs out by clearing the active account and reloading; locking reloads but keeps the account.
+// So an account seen earlier in this tab and gone now is a sign-out. If the web vault changes either, this never
+// fires and the web vault keeps its own behaviour.
+#[get("/esapp-signout.js")]
+fn esapp_signout_js() -> Option<(ContentType, String)> {
+    let url = serde_json::to_string(&esapp_logout_url()?).ok()?;
+    Some((
+        ContentType::JavaScript,
+        format!(
+            r#"(() => {{
+  const key = "global_account_activeAccountId", flag = "esapp_vault_signed_in";
+  const read = (s) => {{ try {{ return JSON.parse(s.getItem(key)); }} catch {{ return null; }} }};
+  const signedIn = () => read(sessionStorage) || read(localStorage);
+  try {{
+    if (!signedIn() && sessionStorage.getItem(flag)) {{
+      sessionStorage.removeItem(flag);
+      location.replace({url});
+      return;
+    }}
+    const mark = () => {{ if (signedIn()) {{ sessionStorage.setItem(flag, "1"); clearInterval(timer); }} }};
+    const timer = setInterval(mark, 1000);
+    mark();
+  }} catch {{}}
+}})();
+"#
+        ),
+    ))
 }
 
 // Make sure that `/index.html` redirect to actual domain path.
@@ -333,5 +378,21 @@ pub fn static_files(filename: &str) -> Result<EtagCached<&'static [u8]>, Error> 
         Ok(EtagCached::new(file.bytes, file.content_type.clone(), &file.etag))
     } else {
         err!(format!("Static file not found: {}", filename.escape_debug()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::inject_signout_script;
+
+    #[test]
+    fn signout_script_goes_once_into_the_head() {
+        let html = "<html><head><title>x</title></head><body></head></body></html>";
+        assert_eq!(
+            inject_signout_script(html, "/vw"),
+            "<html><head><title>x</title><script src=\"/vw/esapp-signout.js\"></script></head><body></head></body></html>"
+        );
+        // No head: the page stays as it was
+        assert_eq!(inject_signout_script("<p>x</p>", ""), "<p>x</p>");
     }
 }

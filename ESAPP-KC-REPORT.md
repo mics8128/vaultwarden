@@ -176,3 +176,14 @@ sequenceDiagram
 限制：
 - 轉換時 VW 會連 KC。KC 連不到時就拒絕轉換，主密碼保留，稍後可以再試。
 - 條件式註冊只有 sqlite 在本機編譯；postgres／mysql 由 CI 編譯。DB 行為沒有自動測試。
+
+## 9. 網頁版登出後回到 IdP（2026-11-27，vault-logout）
+
+設定 `ESAPP_LOGOUT_URL`（只能由 env 設定，必須是 https）後，`GET /` 回傳的 index.html 會在 `</head>` 前插入同源的 `/esapp-signout.js`。CSP 的 `script-src 'self'` 已允許，不需要修改 web vault 的建置。沒有設定時，index 與原本相同，`/esapp-signout.js` 回 404。
+
+判斷方式：web vault 登出時會清掉 active account（`sessionStorage` 的 `global_account_activeAccountId`），再整頁 reload；鎖定也會 reload，但 account 會保留。腳本看到 account 時，在 sessionStorage 記下 `esapp_vault_signed_in`。之後如果 account 不見、但旗標還在，就是登出，腳本清掉旗標，並 `location.replace(ESAPP_LOGOUT_URL)`。腳本只讀 storage 並寫自己的旗標，不碰 DOM，也不改 web vault 的狀態。
+
+- 會轉址：手動登出、在鎖定畫面登出、逾時動作為登出（沒有主密碼的 KC 成員一律是登出）、session 過期、KC 錯誤造成的登出。
+- 不轉址：鎖定、首次造訪、登入途中、沒登入過的分頁（web vault 的帳號狀態以分頁為單位）。
+- 失效時：若 web vault 改了 storage key，或登出不再 reload，腳本就偵測不到登出，web vault 維持原本行為。升級 web vault 後要人工確認一次（upstream-sync PR 說明已列）。
+- 擴充、桌面、手機、CLI 不經過 index.html，行為不變。
