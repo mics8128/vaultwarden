@@ -263,12 +263,12 @@ pub struct LoginJwtClaims {
     // [ "Application" ]
     pub amr: Vec<String>,
 
-    // The Ory identity id of an active Key Connector member; Key Connector looks the member up by it
+    // The Ory identity id of a (non-revoked) Key Connector member; Key Connector looks the member up by it
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub esapp_sub: Option<String>,
-    // When the user signed in (SSO or master password); refreshed tokens leave it out
+    // "invited" or "member", always alongside `esapp_sub`: Key Connector lets an invited user only store a first key
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auth_time: Option<i64>,
+    pub esapp_kc: Option<String>,
 }
 
 impl LoginJwtClaims {
@@ -325,7 +325,7 @@ impl LoginJwtClaims {
             scope,
             amr: vec!["Application".into()],
             esapp_sub: None,
-            auth_time: None,
+            esapp_kc: None,
         }
     }
 

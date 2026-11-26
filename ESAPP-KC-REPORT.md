@@ -168,18 +168,17 @@ sequenceDiagram
 |---|---|---|
 | 撤銷判斷（A-H3／G8） | 撤銷是「原狀態 −128」（`Membership::revoke`），不是固定的 −1。KC 相關判斷統一成兩個函式：`revoked`（status < Invited）與 `active_member`（status ≥ Accepted）。上游 `find_main_org_user_email`、`find_org_user_email`、`find_main_user_org` 的 `!= Revoked` 也一併改成 `>= Invited`。測試用 `Membership::revoke()` 產生的實際值 | 第 7 節只排除 −1，實際撤銷的成員（−126～−128）仍會拿到 KC |
 | `esapp_sub` claim | VW 簽發的 access token（登入、續期、個人 API key）只在使用者是 KC 組織的有效成員（Accepted／Confirmed、未撤銷）時，才帶 `esapp_sub`＝`sso_users.identifier` 的 subject（Ory identity id，不可變）。KC 改用它查 Kratos（esapp-auth 端另行上線） | KC 原本以 email 查身分；email 可變，也無法反映 VW 的撤銷 |
-| 轉成 KC（A-H4／G2） | `convert-to-key-connector` 與 `key-connector/enroll`：(1) token 必須是 5 分鐘內登入取得的（新 claim `auth_time`，只在實際登入時寫入，續期取得的 token 沒有）；(2) VW 用使用者自己的 token 對 KC 送 `GET /user-keys`，確認 KC 已存有金鑰；兩項都通過才清掉主密碼，否則保留 | 官方用戶端在 SSO 登入後立刻轉換，使用流程不變；外洩或續期得到的工作階段無法丟掉主密碼，KC 沒存好也不會讓帳號無法解鎖 |
+| 轉成 KC（A-H4／G2） | `.28` 曾加上「5 分鐘內登入（`auth_time`）＋向 KC 讀回金鑰」的前置條件；**`.30` 起整個停用**，見第 10 節 | — |
 | 註冊原子化（G7） | 既有紀錄改用單一條件式 `UPDATE ... WHERE` 未初始化（沒有密碼、未用 KC、沒有帳號金鑰、沒有 user key）；影響 0 列就拒絕 | 原本先讀再寫，中間可能被別的設定流程寫入 |
 
 **撤銷延遲**：VW 撤銷成員後，已發出的 access token 仍帶 `esapp_sub`，最長到該 token 到期：SSO 登入的 token 跟隨 IdP（Hydra）access token 效期（目前 1 小時），密碼／API key 登入為 2 小時。之後續期取得的 token 就沒有這個 claim。
 
 限制：
-- 轉換時 VW 會連 KC。KC 連不到時就拒絕轉換，主密碼保留，稍後可以再試。
 - 條件式註冊只有 sqlite 在本機編譯；postgres／mysql 由 CI 編譯。DB 行為沒有自動測試。
 
 ## 9. 網頁版登出後回到 IdP（2026-11-27，vault-logout）
 
-設定 `ESAPP_LOGOUT_URL`（只能由 env 設定，必須是 https）後，`GET /` 回傳的 index.html 會在 `</head>` 前插入同源的 `/esapp-signout.js`。CSP 的 `script-src 'self'` 已允許，不需要修改 web vault 的建置。沒有設定時，index 與原本相同，`/esapp-signout.js` 回 404。
+設定 `ESAPP_LOGOUT_URL`（必須是 https；在 `/admin` 唯讀）後，`GET /` 回傳的 index.html 會在 `</head>` 前插入同源的 `/esapp-signout.js`。CSP 的 `script-src 'self'` 已允許，不需要修改 web vault 的建置。沒有設定時，index 與原本相同，`/esapp-signout.js` 回 404。
 
 判斷方式：web vault 登出時會清掉 active account（`sessionStorage` 的 `global_account_activeAccountId`），再整頁 reload；鎖定也會 reload，但 account 會保留。腳本看到 account 時，在 sessionStorage 記下 `esapp_vault_signed_in`。之後如果 account 不見、但旗標還在，就是登出，腳本清掉旗標，並 `location.replace(ESAPP_LOGOUT_URL)`。腳本只讀 storage 並寫自己的旗標，不碰 DOM，也不改 web vault 的狀態。
 
@@ -187,3 +186,17 @@ sequenceDiagram
 - 不轉址：鎖定、首次造訪、登入途中、沒登入過的分頁（web vault 的帳號狀態以分頁為單位）。
 - 失效時：若 web vault 改了 storage key，或登出不再 reload，腳本就偵測不到登出，web vault 維持原本行為。升級 web vault 後要人工確認一次（upstream-sync PR 說明已列）。
 - 擴充、桌面、手機、CLI 不經過 index.html，行為不變。
+
+## 10. 第二輪驗收修補（2026-11-27，secverify2，映像 `1.37.5-esapp.30` 起）
+
+依據 `auth.esapp.net/reviews/security-astra-verify-2.md` P1-1、P1-2。
+
+**P1-1 新成員首次開通**：官方用戶端先把金鑰存到 KC，再呼叫 `set-key-connector-key` 接受邀請，所以存金鑰時成員還是 Invited。`.28` 只發 `esapp_sub` 給 Accepted／Confirmed 成員，KC 改用 `esapp_sub` 後，新成員就無法開通。現在的規則：
+- `esapp_sub`：KC 組織的未撤銷成員（Invited、Accepted、Confirmed），而且有 SSO 連結。
+- `esapp_kc`：Invited 為 `invited`，Accepted／Confirmed 為 `member`。永遠和 `esapp_sub` 一起出現。
+- 登入、續期、個人 API key 簽發的 token 都會帶，值取簽發當下的狀態。
+- KC 端（esapp-auth）：缺任一個就拒絕；`invited` 只能 `POST /user-keys`，而且限該帳號還沒有金鑰，GET 與 PUT 一律拒絕；`member` 照原規則。
+
+**P1-2 不可逆轉換**：`convert-to-key-connector` 與 `key-connector/enroll` 停用，一律回 400「This server does not convert existing accounts to Key Connector, contact your administrator」，不改任何資料。`.28` 的 `auth_time` claim、5 分鐘檢查、向 KC 讀回金鑰的程式一併移除。新成員只由 SSO JIT 開通（`set-key-connector-key`）。
+
+**既有主密碼帳號不能轉成 KC。** 有主密碼、而且以 User 角色加入 KC 組織的帳號，在官方用戶端 SSO 登入後會出現「移除主密碼」頁，按下移除會看到上述錯誤，只能離開組織。處理方式有兩種：在 `/admin` 刪除帳號，讓他改用 SSO 新建；或把他改成 Admin 角色（Owner／Admin 依設計保留主密碼）。

@@ -179,7 +179,7 @@ async fn refresh_login(data: ConnectData, conn: &DbConn, ip: &ClientIp) -> JsonR
             )
         }
         Ok((mut device, mut auth_tokens)) => {
-            auth_tokens.access_claims.esapp_sub = key_connector::esapp_sub(&auth_tokens.access_claims.sub, conn).await;
+            key_connector::set_esapp_claims(&mut auth_tokens.access_claims, conn).await;
             // Save to update `device.updated_at` to track usage and toggle new status
             device.save(true, conn).await?;
 
@@ -530,9 +530,7 @@ async fn authenticated_response(
     conn: &DbConn,
     ip: &ClientIp,
 ) -> JsonResult {
-    // Reached only by a sign-in, never by a refresh
-    auth_tokens.access_claims.auth_time = Some(Utc::now().timestamp());
-    auth_tokens.access_claims.esapp_sub = key_connector::esapp_sub(&user.uuid, conn).await;
+    key_connector::set_esapp_claims(&mut auth_tokens.access_claims, conn).await;
     if CONFIG.mail_enabled() && device.is_new() {
         let now = Utc::now().naive_utc();
         if let Err(e) = mail::send_new_device_logged_in(&user.email, &ip.ip.to_string(), &now, device).await {
@@ -720,7 +718,7 @@ async fn user_api_key_login(
     // ---
     // let orgs = Membership::find_confirmed_by_user(&user.uuid, conn).await;
     let mut access_claims = auth::LoginJwtClaims::default(&device, &user, &AuthMethod::UserApiKey, data.client_id);
-    access_claims.esapp_sub = key_connector::esapp_sub(&user.uuid, conn).await;
+    key_connector::set_esapp_claims(&mut access_claims, conn).await;
 
     // Save to update `device.updated_at` to track usage and toggle new status
     device.save(true, conn).await?;

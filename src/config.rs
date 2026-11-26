@@ -839,7 +839,7 @@ make_config! {
         sso_enabled:                    bool,   true,   def,    false;
         /// Key Connector enabled |> Allow organizations to store their members' master keys on a Key Connector (requires SSO). The URL is an organization SSO setting on the admin page
         key_connector_enabled:          bool,   true,   def,    false;
-        /// Web vault sign-out page |> After the web vault signs out (not on lock), go to this URL, e.g. the identity provider's signed-out page. Empty keeps the web vault on its login page. Only set by the environment
+        /// Web vault sign-out page |> After the web vault signs out (not on lock), go to this URL, e.g. the identity provider's signed-out page. Empty keeps the web vault on its login page
         esapp_logout_url:               String, false,  option;
         /// Only SSO login |> Disable Email+Master Password login
         sso_only:                       bool,   true,   def,    false;

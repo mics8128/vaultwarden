@@ -5,14 +5,13 @@
 // organization. Owners and admins never use it, they keep their master password.
 use rocket::Route;
 use rocket::http::Status;
-use rocket::request::{FromRequest, Outcome, Request};
 use rocket::serde::json::Json;
 use serde_json::Value;
 
 use crate::{
     CONFIG,
     api::{ApiResult, EmptyResult, JsonResult, core::log_user_event},
-    auth::{Headers, decode_login},
+    auth::{Headers, LoginJwtClaims},
     db::{
         DbConn,
         models::{
@@ -20,7 +19,6 @@ use crate::{
             OrganizationId, SsoUser, User, UserId,
         },
     },
-    http_client::make_http_request,
     mail,
     sso::FAKE_SSO_IDENTIFIER,
 };
@@ -118,15 +116,30 @@ pub async fn user_decryption_option(user: &User, sso_login: bool, conn: &DbConn)
     eligible.then(|| org.key_connector_url().map(|url| json!({ "KeyConnectorUrl": url }))).flatten()
 }
 
-/// The `esapp_sub` access token claim: the Ory identity id (the SSO subject) of an active Key Connector member.
-/// Key Connector looks the member up by it and refuses tokens without it.
-pub async fn esapp_sub(user_uuid: &UserId, conn: &DbConn) -> Option<String> {
+/// The `esapp_sub` and `esapp_kc` access token claims of a Key Connector member that is not revoked: the Ory
+/// identity id (the SSO subject), and "invited" or "member". Key Connector looks the member up by the id, lets an
+/// invited user only store a first key (the clients store it before `set-key-connector-key` accepts the invite),
+/// and refuses tokens without them.
+pub async fn set_esapp_claims(claims: &mut LoginJwtClaims, conn: &DbConn) {
+    (claims.esapp_sub, claims.esapp_kc) = match esapp_claims(&claims.sub, conn).await {
+        Some((sub, kc)) => (Some(sub), Some(kc.to_owned())),
+        None => (None, None),
+    };
+}
+
+async fn esapp_claims(user_uuid: &UserId, conn: &DbConn) -> Option<(String, &'static str)> {
     let (_, member) = key_connector_membership(user_uuid, conn).await?;
-    if !active_member(member.status) {
-        return None;
-    }
     let sso_user = SsoUser::find_by_user(user_uuid, conn).await?;
-    sso_subject(&sso_user.identifier)
+    Some((sso_subject(&sso_user.identifier)?, member_state(member.status)))
+}
+
+// key_connector_membership already skips revoked memberships
+fn member_state(status: i32) -> &'static str {
+    if active_member(status) {
+        "member"
+    } else {
+        "invited"
+    }
 }
 
 /// `sso_users.identifier` is `{issuer}/{subject}`
@@ -216,94 +229,6 @@ async fn post_set_key_connector_key(data: Json<SetKeyConnectorKeyData>, headers:
     Ok(())
 }
 
-// Upstream's ConvertUserToKeyConnectorCommand: drops the master password of an existing user,
-// whose master key the client already stored on the Key Connector
-async fn convert_to_key_connector(
-    headers: Headers,
-    token: BearerToken,
-    wrapped_user_key: Option<String>,
-    conn: DbConn,
-) -> EmptyResult {
-    let mut user = headers.user;
-
-    check_can_use_key_connector(&user, &conn).await?;
-    if user.private_key.is_none() {
-        err!("Account is not initialized, cannot convert to Key Connector")
-    }
-    // Like set-key-connector-key: only a member of the Key Connector organization drops the master password
-    let Some((org, member)) = key_connector_membership(&user.uuid, &conn).await else {
-        err!("Organization not found or user is not a member of it")
-    };
-    if !active_member(member.status) {
-        err!("Organization not found or user is not a member of it")
-    }
-    // The clients convert right after signing in; a stolen or refreshed session cannot
-    let auth_time = decode_login(&token.0).ok().and_then(|claims| claims.auth_time);
-    if !recently_signed_in(auth_time, chrono::Utc::now().timestamp()) {
-        err!("Sign in again to remove your master password")
-    }
-    // The master password is the only way to unlock until the Key Connector holds the key
-    let Some(url) = org.key_connector_url() else {
-        err!("Organization not found or user is not a member of it")
-    };
-    if !key_connector_has_key(url, &token.0).await {
-        err!("The Key Connector does not have your key yet, your master password is kept")
-    }
-
-    user.password_hash = Vec::new();
-    user.password_hint = None;
-    user.uses_key_connector = true;
-    if let Some(key) = wrapped_user_key.filter(|k| !k.trim().is_empty()) {
-        user.akey = key;
-    }
-    user.save(&conn).await?;
-
-    log_user_event(EventType::UserMigratedKeyToKeyConnector, &user.uuid, headers.device.atype, &headers.ip.ip, &conn)
-        .await;
-    Ok(())
-}
-
-const REAUTH_SECONDS: i64 = 5 * 60;
-
-fn recently_signed_in(auth_time: Option<i64>, now: i64) -> bool {
-    auth_time.is_some_and(|t| t <= now + 30 && now - t <= REAUTH_SECONDS)
-}
-
-/// Asks the Key Connector, with the user's own token, whether it stored the user's key
-async fn key_connector_has_key(url: &str, token: &str) -> bool {
-    let Ok(request) = make_http_request(reqwest::Method::GET, &format!("{url}/user-keys")) else {
-        return false;
-    };
-    match request.bearer_auth(token).send().await {
-        Ok(res) if res.status().is_success() => {
-            res.json::<Value>().await.is_ok_and(|v| v["key"].as_str().is_some_and(|k| !k.is_empty()))
-        }
-        Ok(res) => {
-            warn!("Key Connector answered {} when checking a stored key", res.status());
-            false
-        }
-        Err(e) => {
-            warn!("Key Connector unreachable when checking a stored key: {e}");
-            false
-        }
-    }
-}
-
-/// The raw access token, for the Key Connector check and the sign-in time
-struct BearerToken(String);
-
-#[rocket::async_trait]
-impl<'r> FromRequest<'r> for BearerToken {
-    type Error = &'static str;
-
-    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        match request.headers().get_one("Authorization").and_then(|h| h.strip_prefix("Bearer ")) {
-            Some(token) => Outcome::Success(BearerToken(token.to_owned())),
-            None => Outcome::Error((Status::Unauthorized, "No access token provided")),
-        }
-    }
-}
-
 /// Revoking subtracts 128 from the status (`Membership::revoke`); older rows use -1
 fn revoked(status: i32) -> bool {
     status < MembershipStatus::Invited as i32
@@ -315,24 +240,13 @@ fn active_member(status: i32) -> bool {
 }
 
 #[post("/accounts/convert-to-key-connector")]
-async fn post_convert_to_key_connector(headers: Headers, token: BearerToken, conn: DbConn) -> EmptyResult {
-    convert_to_key_connector(headers, token, None, conn).await
+fn post_convert_to_key_connector(_headers: Headers) -> EmptyResult {
+    err!(NO_CONVERSION)
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct KeyConnectorEnrollmentData {
-    key_connector_key_wrapped_user_key: String,
-}
-
-#[post("/accounts/key-connector/enroll", data = "<data>")]
-async fn post_enroll_to_key_connector(
-    data: Json<KeyConnectorEnrollmentData>,
-    headers: Headers,
-    token: BearerToken,
-    conn: DbConn,
-) -> EmptyResult {
-    convert_to_key_connector(headers, token, Some(data.into_inner().key_connector_key_wrapped_user_key), conn).await
+#[post("/accounts/key-connector/enroll")]
+fn post_enroll_to_key_connector(_headers: Headers) -> EmptyResult {
+    err!(NO_CONVERSION)
 }
 
 // Shown in the client's "Confirm Key Connector domain" dialog
@@ -522,15 +436,9 @@ mod tests {
         assert!(!active_member(MembershipStatus::Invited as i32));
         assert!(active_member(MembershipStatus::Accepted as i32));
         assert!(active_member(MembershipStatus::Confirmed as i32));
-    }
-
-    #[test]
-    fn conversion_needs_a_recent_sign_in() {
-        let now = 1_000_000;
-        assert!(recently_signed_in(Some(now - 60), now));
-        assert!(!recently_signed_in(Some(now - REAUTH_SECONDS - 1), now));
-        assert!(!recently_signed_in(Some(now + 3600), now));
-        assert!(!recently_signed_in(None, now));
+        assert_eq!(member_state(MembershipStatus::Invited as i32), "invited");
+        assert_eq!(member_state(MembershipStatus::Accepted as i32), "member");
+        assert_eq!(member_state(MembershipStatus::Confirmed as i32), "member");
     }
 
     #[test]
