@@ -80,6 +80,29 @@ async fn find_key_connector_org(
     org.key_connector_url().is_some().then_some((org, member))
 }
 
+/// The server's Key Connector organization (upstream allows one per self-hosted server)
+pub async fn key_connector_org(conn: &DbConn) -> Option<Organization> {
+    if !CONFIG.key_connector_enabled() {
+        return None;
+    }
+    Organization::get_all(conn).await.into_iter().find(|org| org.key_connector_url().is_some())
+}
+
+/// Upstream's SSO just-in-time provisioning: an SSO user who has no vault keys yet and no organization joins the
+/// Key Connector organization as an invited User. `set-key-connector-key` then accepts the invite (mailing the
+/// organization's billing email), and an owner confirms the member to share the organization key.
+pub async fn auto_join_key_connector_org(user: &User, conn: &DbConn) -> EmptyResult {
+    if user.private_key.is_some() || !Membership::find_any_state_by_user(&user.uuid, conn).await.is_empty() {
+        return Ok(());
+    }
+    let Some(org) = key_connector_org(conn).await else {
+        return Ok(());
+    };
+    let mut member = Membership::new(user.uuid.clone(), org.uuid, None);
+    member.status = MembershipStatus::Invited as i32;
+    member.save(conn).await
+}
+
 /// `UserDecryptionOptions.KeyConnectorOption` of a login response. Upstream sends it on SSO logins to the
 /// organization's members; owners and admins are left out so they set (and keep) a master password.
 /// Enrolled users also get it on API key logins, so the CLI unlocks without `bw unlock`.

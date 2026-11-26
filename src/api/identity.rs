@@ -299,7 +299,10 @@ async fn sso_login(data: ConnectData, user_id: &mut Option<UserId>, conn: &DbCon
     // Will trigger 2FA flow if needed
     let (user, mut device, twofactor_token, sso_user) = match user_with_sso {
         None => {
-            if !CONFIG.is_sso_signup_allowed(&user_infos.email) {
+            // With a Key Connector organization, SSO sign-ups join it (see auto_join_key_connector_org below)
+            let key_connector_signup =
+                CONFIG.signups_domains_whitelist().is_empty() && key_connector::key_connector_org(conn).await.is_some();
+            if !CONFIG.is_sso_signup_allowed(&user_infos.email) && !key_connector_signup {
                 if CONFIG.signups_domains_whitelist().is_empty() {
                     err!(
                         "Signups are disabled. You will need an invitation",
@@ -378,6 +381,7 @@ async fn sso_login(data: ConnectData, user_id: &mut Option<UserId>, conn: &DbCon
 
     // Set the user_uuid here to be passed back used for event logging.
     *user_id = Some(user.uuid.clone());
+    key_connector::auto_join_key_connector_org(&user, conn).await?;
 
     // We passed 2FA get auth tokens
     let auth_tokens = sso::redeem(&device, &user, data.client_id, sso_user, sso_auth, user_infos, conn).await?;
