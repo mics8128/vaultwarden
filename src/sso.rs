@@ -331,7 +331,7 @@ pub async fn redeem(
     auth_user: OIDCAuthenticatedUser,
     conn: &DbConn,
 ) -> ApiResult<AuthTokens> {
-    sso_auth.delete(conn).await?;
+    sso_auth.consume(conn).await?;
 
     if sso_user.is_none() {
         let user_sso = SsoUser {

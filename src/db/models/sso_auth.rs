@@ -139,6 +139,21 @@ impl SsoAuth {
         .await
     }
 
+    /// Deletes it, failing when a concurrent redemption already did: only one of them signs in
+    pub async fn consume(self, conn: &DbConn) -> EmptyResult {
+        let deleted: Result<usize, crate::error::Error> = conn
+            .run(move |conn| {
+                diesel::delete(sso_auth::table.filter(sso_auth::state.eq(self.state)))
+                    .execute(conn)
+                    .map_res("Error deleting sso_auth")
+            })
+            .await;
+        if deleted? != 1 {
+            err!("SSO authentication was already used")
+        }
+        Ok(())
+    }
+
     pub async fn delete_expired(pool: DbPool) -> EmptyResult {
         debug!("Purging expired sso_auth");
         if let Ok(conn) = pool.get().await {
