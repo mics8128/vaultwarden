@@ -7,6 +7,8 @@
 **結論：全部驗證項目都通過。** Web vault、官方 Chrome 擴充 2026.11.0、bw CLI 2026.11.1（SSO 與 API key 兩種登入）都已實測：成員不必輸入主密碼即可解鎖。擁有者仍需要主密碼，也無法改用 Key Connector。管理員切換成其他成員時，Hydra 與 Vaultwarden 兩層都會拒絕登入，因此拿不到該成員的金鑰。
 
 > **2026-11-27 變更**：使用者決定允許切換身分登入 Vault（密碼庫為組織共用）。VW 層拒絕帶 `act` 的 id_token 的檢查（下表 #12）已移除，esapp-auth 的 `vault` 應用也關掉 `no_switch`（#11）；管理員切換成成員後可登入並取得該成員的 KC 金鑰。KC 對帶 `act` 的 VW token 仍拒絕（#13），但 VW 簽發的 token 不帶 `act`，不影響此流程。
+>
+> **2026-11-27 自動加入（JIT）**：有 KC 組織時，SSO 新使用者不需邀請，第一次登入即建帳並以 User、Invited 加入 KC 組織（`key_connector::auto_join_key_connector_org`，`identity.rs` 的 SSO 註冊在沒設網域白名單時也放行）；之後流程同 #3。已實測於正式環境（臨時身分，驗完已刪）。
 
 ## 1. 交付物
 
