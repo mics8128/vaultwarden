@@ -793,8 +793,8 @@ make_config! {
         /// Allowed iframe ancestors (Know the risks!) |> Allows other domains to embed the web vault into an iframe, useful for embedding into secure intranets
         allowed_iframe_ancestors: String, true, def,    String::new();
 
-        /// Allowed connect-src (Know the risks!) |> Allows other domains for URLs which can be loaded using script interfaces like the Forwarded email alias feature
-        allowed_connect_src:      String, true, def,    String::new();
+        /// Allowed connect-src (Know the risks!) |> Allows other domains for URLs which can be loaded using script interfaces like the Forwarded email alias feature. Only set by the environment: it limits the Key Connector URL
+        allowed_connect_src:      String, false, def,   String::new();
 
         /// Seconds between login requests |> Number of seconds, on average, between login and 2FA requests from the same IP address before rate limiting kicks in
         login_ratelimit_seconds:       u16, false, def, 60;
@@ -1557,6 +1557,15 @@ impl Config {
                 (ConfigBuilder::default(), ConfigFileStatus::Error)
             }
         };
+
+        // Non-editable keys still load from the file; this one bounds the Key Connector URL, so only env sets it
+        let mut usr = usr;
+        if usr.allowed_connect_src.take().is_some() {
+            println!(
+                "[WARNING] Ignoring `allowed_connect_src` from `{}`, set ALLOWED_CONNECT_SRC instead.",
+                *CONFIG_FILE
+            );
+        }
 
         // Create merged config, config file overwrites env
         let mut overrides = Vec::new();
